@@ -22,6 +22,7 @@
  * WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  */
 
+#include <cstddef>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -31,6 +32,7 @@
 #include <iomanip>
 #include <limits>
 #include <regex>
+#include <vector>
 
 #include <jau/file_util.hpp>
 #include <jau/io_util.hpp>
@@ -47,9 +49,26 @@ using namespace jau::int_literals;
 
 static const unsigned MaxConnections = 2;
 static const std::string HorizonUri = "https://ssd.jpl.nasa.gov/api/horizons_file.api";
+
+static std::vector<unsigned int> CBodies = {
+    10,  /// <Sun
+    199, /// <Mercury
+    299, /// <Mercury
+    399, /// <Mercury
+    499, /// <Mercury
+    599, /// <Mercury
+    699, /// <Mercury
+    799, /// <Mercury
+    899, /// <Mercury
+    999, /// <Mercury
+    301, /// <Earth's Moon
+    503, /// <Jupiter's Ganymede
+    606, /// <Saturn's Titan
+};
+
 static const std::string ObjectIdMark = "OBJECT_ID";
 static const std::string ObjectDateMark = "OBJECT_DATE";
-static const std::string HorizonCmdTemplate = 
+static const std::string HorizonCmdTemplate =
     "!$$SOF\n"
     "COMMAND='"+ObjectIdMark+"'\n"
     "TABLE_TYPE='Vector'\n"
@@ -61,7 +80,7 @@ static const std::string ZeroHour = "00:00:00";
 
 static std::string getCommand(const std::string& objectID, const std::string& objectDate) {
     std::string s = HorizonCmdTemplate;
-    
+
     size_t idx = s.find(ObjectIdMark, 0);
     if (idx == std::string::npos) {
         return std::string(); // error
@@ -86,28 +105,8 @@ static std::string toString(unsigned year, unsigned month, unsigned day) {
     std::string str;
     str.reserve(10+1);  // incl. EOS
     str.resize(10); // excl. EOS
-    
+
     ::snprintf(&str[0], 10+1, "%4.4u-%2.2u-%2.2u", year, month, day);
-    return str;
-}
-
-/// @param planetIDx ranges from [1..9]
-static unsigned toCBodyID(unsigned planetIdx) {
-    return (( planetIdx * 100) + 99)%1000;
-}
-
-/// @param planetIDx ranges from [1..9]
-static unsigned toBarycenterID(unsigned planetIdx) {
-    return ( planetIdx )%10;
-}
-
-/// @param planetIDx ranges from [1..9]
-static std::string toString(unsigned planetIdx) {
-    std::string str;
-    str.reserve(3+1);  // incl. EOS
-    str.resize(3); // excl. EOS
-    
-    ::snprintf(&str[0], 3+1, "%3.3u", (( planetIdx * 100) + 99)%1000);
     return str;
 }
 
@@ -119,7 +118,7 @@ static bool getPosVelo(const std::string& data, double pos[/*3*/], double velo[/
     int matchCount = 0;
     ::memset(&pos[0], 0, sizeof(double)*3);
     ::memset(&velo[0], 0, sizeof(double)*3);
-    
+
     std::smatch match;
     if( std::regex_search(data, match, PosPattern) ) {
         // ssize_t m_strEnd = match.position() + match.length();
@@ -164,7 +163,7 @@ static bool getPosVelo(const std::string& data, double pos[/*3*/], double velo[/
         }
     }
     return 2 == matchCount;
-} 
+}
 
 static std::string readFile(const std::string& path) {
     constexpr size_t read_size = std::size_t(4096);
@@ -172,7 +171,7 @@ static std::string readFile(const std::string& path) {
     stream.exceptions(std::ios_base::badbit);
     if (not stream) {
         return std::string();
-    }    
+    }
     auto out = std::string();
     auto buf = std::string(read_size, '\0');
     while (stream.read(& buf[0], read_size)) {
@@ -187,7 +186,7 @@ static const std::string HttpBoundary = "affedeadbeaf";
 static const std::string CRLF = "\r\n";
 
 static int64_t toUnixSeconds(const std::string& ymd_timestr) noexcept {
-    struct std::tm tm_0; 
+    struct std::tm tm_0;
     ::memset(&tm_0, 0, sizeof(tm_0));
     ::strptime(ymd_timestr.c_str(), "%Y-%m-%d %H:%M:%S", &tm_0);
     std::time_t t1 = ::timegm (&tm_0);
@@ -197,7 +196,7 @@ static int64_t toUnixSeconds(const std::string& ymd_timestr) noexcept {
 struct CBodyData {
     // Horizon celestial body ID `pidx * 100 + 99`, i.e. pidx=1 for Mercury -> id=199
     unsigned id;
-    // Position on the ecliptical plane w/ units in [km] 
+    // Position on the ecliptical plane w/ units in [km]
     double position[3];
     // Velocity vector on the ecliptical plane w/ units in [km/s]
     double velocity[3];
@@ -206,27 +205,27 @@ struct SolarData {
     /// Timestamp in UTC, format YYYY-MM-DD HH:MM:SS
     std::string time_s;
     /// Seconds since Unix Epoch 1970-01-01T00:00:00.0Z in UTC
-    int64_t time_u; 
-    std::vector<CBodyData> planets;
+    int64_t time_u;
+    std::vector<CBodyData> cbodies;
 };
 struct SolarDataSet {
     size_t setCount;
-    size_t planetCount;
+    size_t cbodyCount;
     std::vector<SolarData> set;
-    SolarDataSet(size_t _setCount, size_t _planetCount)
-    : setCount(_setCount), planetCount(_planetCount), set(_setCount) 
+    SolarDataSet(size_t _setCount, size_t _cbodyCount)
+    : setCount(_setCount), cbodyCount(_cbodyCount), set(_setCount)
     {
         set.resize(_setCount);
         for(SolarData& p : set) {
-            p.planets.resize(_planetCount);
+            p.cbodies.resize(_cbodyCount);
         }
-    }    
+    }
 };
 
 std::ostream& operator<<(std::ostream& os, const SolarDataSet& solarDataSets)
 {
         os << "#include <cstdint>\n\n";
-        os << "struct CBodyData {\n" 
+        os << "struct CBodyData {\n"
            << "  // Horizon celestial body ID `pidx * 100 + 99`, i.e. pidx=1 for Mercury -> id=199\n"
            << "  unsigned id;\n"
            << "  // Position on the ecliptical plane w/ units in [km]\n"
@@ -239,13 +238,13 @@ std::ostream& operator<<(std::ostream& os, const SolarDataSet& solarDataSets)
            << "  const char* time_s;\n"
            << "  /// Seconds since Unix Epoch 1970-01-01T00:00:00.0Z in UTC\n"
            << "  int64_t time_u;\n"
-           << "  CBodyData planets[" << solarDataSets.planetCount << "];\n"
+           << "  CBodyData cbodies[" << solarDataSets.cbodyCount << "];\n"
            << "};\n";
         os << "struct SolarDataSet {\n"
            << "  /// Number of SolarData entries\n"
            << "  unsigned setCount;\n"
            << "  /// Number of CBodyData entries within each SolarData entry\n"
-           << "  unsigned planetCount;\n"
+           << "  unsigned cbodyCount;\n"
            << "  SolarData set[" << solarDataSets.setCount << "];\n"
            << "};\n";
         os << "\n";
@@ -253,23 +252,23 @@ std::ostream& operator<<(std::ostream& os, const SolarDataSet& solarDataSets)
            << "    /// Number of SolarData entries\n"
            << "    " << solarDataSets.setCount << ",\n"
            << "    /// Number of CBodyData entries within each SolarData entry\n"
-           << "    " << solarDataSets.planetCount << ",\n"
+           << "    " << solarDataSets.cbodyCount << ",\n"
            << "    /// SolarData entries\n"
            << "    {\n";
-        
+
         constexpr int max_precision{std::numeric_limits<double>::digits10 + 1};
         os << std::setprecision( max_precision );
         for(size_t setIdx=0; setIdx < solarDataSets.setCount; ++setIdx) {
             const SolarData& ps = solarDataSets.set[setIdx];
             os << "        /** SolarData [" << setIdx << "]: " << ps.time_s << "( */" << "\n";
             os << "        { \"" << ps.time_s << "\", " << ps.time_u << ", {\n";
-            for(size_t planetIdx=0; planetIdx < solarDataSets.planetCount; ++planetIdx) {
-                const CBodyData& p = ps.planets[planetIdx];
-                os << "            /** Planet [" << planetIdx << "], id " << p.id << " w/ max_precision " << max_precision << " */\n";
+            for(size_t cbodyIdx=0; cbodyIdx < solarDataSets.cbodyCount; ++cbodyIdx) {
+                const CBodyData& p = ps.cbodies[cbodyIdx];
+                os << "            /** CBody [" << cbodyIdx << "], id " << p.id << " w/ max_precision " << max_precision << " */\n";
                 os << "            { " << p.id << ",\n";
                 os << "              { " << p.position[0] << ", " << p.position[1] << ", " << p.position[2] << "},\n";
                 os << "              { " << p.velocity[0] << ", " << p.velocity[1] << ", " << p.velocity[2] << "}\n";
-                if( planetIdx < solarDataSets.planetCount-1 ) {
+                if( cbodyIdx < solarDataSets.cbodyCount-1 ) {
                     os << "            },\n";
                 } else {
                     os << "            }\n";
@@ -280,10 +279,10 @@ std::ostream& operator<<(std::ostream& os, const SolarDataSet& solarDataSets)
             } else {
                 os << "        } }\n";
             }
-        }   
-        os << "    }\n";     
+        }
+        os << "    }\n";
         os << "};\n";
-        return os;  
+        return os;
 }
 
 int main(int argc, char** argv)
@@ -295,31 +294,25 @@ int main(int argc, char** argv)
         double pos[3], velo[3];
         bool res = getPosVelo(data, pos, velo);
         return res ? 0 : 1;
-    } 
+    }
     unsigned year_min = 2014;
     unsigned year_max = 2024;
-    
-    unsigned cbody_min = 1;
-    unsigned cbody_max = 9;
+
     bool useBarycenter = false;
-    
-    if( argc >= 1+3 ) {
+
+    if( argc >= 1+2 ) {
         // year_min, year_max, planet_count
         year_min = ::atoi(argv[1]);
         year_max = ::atoi(argv[2]);
-        unsigned cbc = ::atoi(argv[3]);
-        cbody_max = cbody_min + cbc - 1;
-        if( year_max >= year_min && year_min > 0 && cbody_max >= cbody_min ) {
-            std::cerr << "User args: "  
-                      << "CBodies [" << cbody_min << ".." << cbody_max << "] for " 
-                      << " years [" << year_min << ".." << year_max << "]" 
-                      << std::endl;            
+        if( year_max >= year_min && year_min > 0 ) {
+            std::cerr << "User args: "
+                      << "years [" << year_min << ".." << year_max << "]"
+                      << std::endl;
         } else {
-            std::cerr << "Illegal user args: "  
-                      << "CBodies [" << cbody_min << ".." << cbody_max << "] for " 
-                      << " years [" << year_min << ".." << year_max << "]" 
-                      << std::endl;            
-            return 1;            
+            std::cerr << "Illegal user args: "
+                      << " years [" << year_min << ".." << year_max << "]"
+                      << std::endl;
+            return 1;
         }
     }
     if( argc > 1+3 ) {
@@ -328,24 +321,24 @@ int main(int argc, char** argv)
         }
     }
     const unsigned year_count = year_max - year_min + 1;
-    const unsigned cbody_count = cbody_max - cbody_min + 1;
-    
+    const unsigned cbody_count = CBodies.size();
+
     SolarDataSet solarDataSets(year_count, cbody_count);
-    
+
     int ret = 0;
-    
+
     const unsigned request_count = year_count * cbody_count;
-    std::cerr << "Requesting " << request_count << " data sets for " 
-              << cbody_count << " cbodies [" << cbody_min << ".." << cbody_max << "] for " 
+    std::cerr << "Requesting " << request_count << " data sets for "
+              << cbody_count << " cbodies for "
               << year_count << " years [" << year_min << ".." << year_max << "]"
-              << ", barycenter " << std::to_string(useBarycenter) 
+              << ", barycenter " << std::to_string(useBarycenter)
               << std::endl;
-    
+
     std::atomic<unsigned> requestCompletedCount(0);
     std::atomic<unsigned> requestErrorCount(0);
     std::vector<jau::io::AsyncStreamResponseRef> responses;
     responses.reserve(10);
-    
+
     std::vector<jau::io::net_tk_handle> free_handles;
     for(unsigned i=0; i<std::min<unsigned>(request_count, MaxConnections); ++i) {
         free_handles.push_back( jau::io::create_net_tk_handle() );
@@ -355,38 +348,34 @@ int main(int argc, char** argv)
         if( 0 == free_handles.size() ) {
             jau::io::AsyncStreamResponseRef r = responses.back();
             responses.pop_back();
-            r->thread.join();                
+            r->thread.join();
             return r->handle;
         } else {
             jau::io::net_tk_handle handle = free_handles.back();
             free_handles.pop_back();
-            return handle;            
+            return handle;
         }
     };
-    
+
     for (unsigned year = year_min; year <= year_max; ++year) {
         SolarData& solarData = solarDataSets.set[year - year_min];
         std::string objectDate = toString(year, 1, 1);
         solarData.time_s.append(objectDate).append(" ").append(ZeroHour);
         solarData.time_u = toUnixSeconds(solarData.time_s);
-         
-        for (unsigned planetIdx = cbody_min; planetIdx <= cbody_max; ++planetIdx) {
-            const size_t request_idx = ( year - year_min ) * cbody_count + ( planetIdx - cbody_min ) + 1;
-            CBodyData& cbody = solarData.planets[planetIdx - cbody_min];
-            if( useBarycenter ) {
-                cbody.id = toBarycenterID(planetIdx);
-            } else {
-                cbody.id = toCBodyID(planetIdx);                
-            }
-            std::string objectID = toString(planetIdx);
+
+        for (unsigned planetIdx = 0; planetIdx < cbody_count; ++planetIdx) {
+            const size_t request_idx = ( year - year_min ) * cbody_count + planetIdx + 1;
+            CBodyData& cbody = solarData.cbodies[planetIdx];
+            cbody.id = CBodies[planetIdx];
+            std::string objectID = std::to_string(cbody.id);
             std::string cmd = getCommand(objectID, objectDate);
             std::cerr << "Request " << request_idx << " for CBody [" << planetIdx << "], id " << cbody.id << ", year " << year
-                      << ", responses " << responses.size() << ", free handles " << free_handles.size() 
+                      << ", responses " << responses.size() << ", free handles " << free_handles.size()
                       << std::endl;
             if constexpr (DBG_OUT) {
                 std::cerr << cmd << std::endl << std::endl;
-            }            
-            
+            }
+
             jau::io::http::PostRequestPtr postReq = std::make_unique<jau::io::http::PostRequest>();
             postReq->header.emplace("Content-Type", "multipart/form-data; boundary="+HttpBoundary);
             postReq->body.append(HttpBoundarySep).append(HttpBoundary).append(CRLF);
@@ -401,25 +390,25 @@ int main(int argc, char** argv)
             jau::io::AsyncStreamResponseRef response = jau::io::read_url_stream_async(get_free_handle(), HorizonUri, std::move(postReq), nullptr,
                                                         [year, &requestCompletedCount, &requestErrorCount, &cbody]
                                                         (jau::io::AsyncStreamResponse& response0, const uint8_t* data0 , size_t len0, bool is_final0) -> bool {
-                const bool ok = response0.header_resp.completed() && 200 == response0.header_resp.response_code();                
+                const bool ok = response0.header_resp.completed() && 200 == response0.header_resp.response_code();
                 if( !ok ) {
-                    std::cerr << "ERROR for CBody " << cbody.id << ", year " << year 
+                    std::cerr << "ERROR for CBody " << cbody.id << ", year " << year
                              << ": status code " << response0.header_resp.response_code()
                              << ", result " << response0.result
                              << std::endl << std::endl;
                     ++requestErrorCount;
                     return false;
-                } 
+                }
                 if( nullptr != data0 && len0 > 0 ) {
                     response0.result_text.append(reinterpret_cast<const char*>(data0), len0);
                 }
                 if( is_final0 ) {
                     if constexpr (DBG_OUT) {
-                        std::cerr << "Response for CBody " << cbody.id << ", year " << year 
+                        std::cerr << "Response for CBody " << cbody.id << ", year " << year
                                  << ": status code " << response0.header_resp.response_code()
                                  << ", result " << response0.result
-                                 << ", len " << len0 << "/" << response0.result_text.length()+len0 
-                                 << ", read " << response0.total_read  << "/" << response0.content_length 
+                                 << ", len " << len0 << "/" << response0.result_text.length()+len0
+                                 << ", read " << response0.total_read  << "/" << response0.content_length
                                  << ", final " << is_final0
                                  << std::endl;
                     }
@@ -434,7 +423,7 @@ int main(int argc, char** argv)
                             cbody.velocity[1] = velo[1];
                             cbody.velocity[2] = velo[2];
                         } else {
-                            std::cerr << "Parsing Data Error for CBody " << cbody.id << ", year " << year << std::endl; 
+                            std::cerr << "Parsing Data Error for CBody " << cbody.id << ", year " << year << std::endl;
                         }
                     } else {
                         std::cerr << "No Data for CBody " << cbody.id << ", year " << year << std::endl << std::endl;
@@ -452,26 +441,25 @@ int main(int argc, char** argv)
             }
         }
     }
-
     for(jau::io::AsyncStreamResponseRef& r : responses) {
         r->thread.join();
-        jau::io::free_net_tk_handle( r->handle );         
+        jau::io::free_net_tk_handle( r->handle );
     }
     responses.clear();
     for(jau::io::net_tk_handle h : free_handles) {
-        jau::io::free_net_tk_handle(h);         
+        jau::io::free_net_tk_handle(h);
     }
     free_handles.clear();
 
-    std::cerr << std::endl << "Requests completed " << requestCompletedCount << ", "; 
+    std::cerr << std::endl << "Requests completed " << requestCompletedCount << ", ";
     if( 0 != requestErrorCount ) {
         std::cerr << "Errors: " << requestErrorCount << std::endl;
-        
+
     } else {
         std::cerr << "OK" << std::endl;
         std::cout << solarDataSets;
     }
-    
-    return ret;    
+
+    return ret;
 }
 
