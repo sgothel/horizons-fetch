@@ -1,0 +1,9 @@
+/.cache/
+build*/
+dist*/
+snaps/
+/compile_commands.json
+*~
+*.log
+.clangd
+
